@@ -2,6 +2,7 @@ package com.cycitv.ui.screens
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,7 +21,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,6 +34,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -42,6 +43,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.focus.FocusRequester
@@ -54,9 +56,10 @@ import com.cycitv.data.room.SearchEntity
 import com.cycitv.ui.components.PosterCard
 import com.cycitv.ui.components.QrCode
 import com.cycitv.ui.components.tvFocus
-import com.cycitv.ui.theme.OnPrimary
 import com.cycitv.ui.theme.Primary
 import com.cycitv.ui.theme.PrimaryDim
+import com.cycitv.ui.theme.CycShape
+import com.cycitv.ui.theme.BorderSubtle
 import com.cycitv.ui.theme.SurfaceHi
 import com.cycitv.ui.theme.TextDim
 import com.cycitv.ui.theme.TextMain
@@ -188,27 +191,37 @@ fun SearchScreen(
             Box(
                 Modifier
                     .weight(1f)
-                    .background(SurfaceHi, RoundedCornerShape(12.dp))
+                    .clip(CycShape.chip)
+                    .background(SurfaceHi)
+                    .border(1.5f.dp, BorderSubtle, CycShape.chip)
                     .padding(horizontal = 20.dp, vertical = 12.dp)
             ) {
                 Text(
                     if (query.isEmpty()) "点「手机扫码输入」用手机搜，或点选下方热门词…" else query,
-                    fontSize = 24.sp,
+                    fontSize = 21.sp,
                     color = if (query.isEmpty()) TextDim else TextMain,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             Spacer(Modifier.width(12.dp))
             Box(
                 Modifier
-                    .tvFocus()
+                    .tvFocus(cornerRadius = 8.dp)
                     .clickable { showPhoneInput = !showPhoneInput }
-                    .background(if (showPhoneInput) Primary else SurfaceHi, RoundedCornerShape(12.dp))
+                    .clip(CycShape.chip)
+                    .background(if (showPhoneInput) PrimaryDim else SurfaceHi)
+                    .border(
+                        1.5f.dp,
+                        if (showPhoneInput) Primary else BorderSubtle,
+                        CycShape.chip,
+                    )
                     .padding(horizontal = 18.dp, vertical = 12.dp)
             ) {
                 Text(
                     "手机扫码输入",
                     fontSize = 20.sp,
-                    color = if (showPhoneInput) OnPrimary else TextMain,
+                    color = if (showPhoneInput) Primary else TextMain,
                 )
             }
         }
@@ -218,7 +231,10 @@ fun SearchScreen(
             if (history.isNotEmpty() || hotWords.isNotEmpty()) {
                 Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (history.isNotEmpty()) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             Text("历史", fontSize = 15.sp, color = TextDim, modifier = Modifier.width(40.dp))
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
                                 items(history, key = { it.id }) { h ->
@@ -232,7 +248,10 @@ fun SearchScreen(
                         }
                     }
                     if (hotWords.isNotEmpty()) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             Text("热门", fontSize = 15.sp, color = TextDim, modifier = Modifier.width(40.dp))
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
                                 items(hotWords) { w ->
@@ -252,7 +271,9 @@ fun SearchScreen(
                 Modifier
                     .fillMaxWidth()
                     .padding(top = 14.dp)
-                    .background(SurfaceHi, RoundedCornerShape(14.dp))
+                    .clip(CycShape.panel)
+                    .background(SurfaceHi)
+                    .border(1.5f.dp, BorderSubtle, CycShape.panel)
                     .padding(20.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(28.dp),
@@ -263,7 +284,8 @@ fun SearchScreen(
                     Box(
                         Modifier
                             .size(220.dp)
-                            .background(TextDim.copy(alpha = 0.2f), RoundedCornerShape(10.dp)),
+                            .clip(CycShape.chip)
+                            .background(TextDim.copy(alpha = 0.2f)),
                         contentAlignment = Alignment.Center,
                     ) { Text("无网络", color = TextDim, fontSize = 18.sp) }
                 }
@@ -276,7 +298,7 @@ fun SearchScreen(
                         lineHeight = 26.sp,
                     )
                     Text(
-                        "需手机与电视连接同一 WiFi", fontSize = 15.sp, color = PrimaryDim,
+                        "需手机与电视连接同一 WiFi", fontSize = 15.sp, color = Primary,
                     )
                 }
             }
@@ -299,7 +321,7 @@ fun SearchScreen(
                     modifier = Modifier.align(Alignment.Center)
                 )
                 else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(6),
+                    columns = GridCells.Adaptive(minSize = 148.dp),
                     contentPadding = PaddingValues(bottom = 30.dp),
                     horizontalArrangement = Arrangement.spacedBy(18.dp),
                     verticalArrangement = Arrangement.spacedBy(18.dp),
@@ -308,7 +330,8 @@ fun SearchScreen(
                         item(key = v.videoId) {
                             PosterCard(
                                 v, { onOpen(v.videoId) },
-                                modifier = if (i == 0) Modifier.focusRequester(resultFocus).tvFocus() else Modifier.tvFocus()
+                                // 首卡挂焦点请求器(结果跳转用); 焦点视觉由官方 TV Card 自带
+                                modifier = if (i == 0) Modifier.focusRequester(resultFocus) else Modifier,
                             )
                         }
                     }
@@ -322,7 +345,9 @@ fun SearchScreen(
 private fun Chip(label: String, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
-            .background(SurfaceHi, RoundedCornerShape(10.dp))
+            .clip(CycShape.chip)
+            .background(SurfaceHi)
+            .border(1.5f.dp, BorderSubtle, CycShape.chip)
             .padding(horizontal = 14.dp, vertical = 7.dp)
     ) {
         Text(label, fontSize = 17.sp, color = TextMain, maxLines = 1)

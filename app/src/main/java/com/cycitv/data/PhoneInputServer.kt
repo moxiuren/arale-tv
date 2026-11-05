@@ -55,6 +55,10 @@ object PhoneInputServer {
     @Volatile
     var authApi: (suspend (op: String, username: String, password: String, email: String, code: String) -> String)? = null
 
+    /** 登录/注册成功后回调,由 App 注入: 加密留档账号密码,供 token 过期时静默续登 */
+    @Volatile
+    var onCredentials: (suspend (username: String, password: String) -> Unit)? = null
+
     /** 扫码登录结果: ok=true 时 token/username 有效 */
     data class LoginResult(val ok: Boolean, val msg: String, val token: String = "", val username: String = "")
 
@@ -188,7 +192,10 @@ object PhoneInputServer {
                 val ok = r.isSuccess
                 val token = r.getOrNull()
                 val err = r.exceptionOrNull()?.message ?: "登录失败"
-                if (ok) _loginResult.emit(LoginResult(true, "登录成功", token ?: "", username))
+                if (ok) {
+                    runCatching { onCredentials?.invoke(username, password) }
+                    _loginResult.emit(LoginResult(true, "登录成功", token ?: "", username))
+                }
                 withContext(Dispatchers.IO) { reply(jsonOf("ok" to ok, "msg" to (if (ok) "登录成功" else err), "token" to (token ?: ""))) }
             }
         }
@@ -207,7 +214,10 @@ object PhoneInputServer {
                 val ok = r.isSuccess
                 val token = r.getOrNull()
                 val err = r.exceptionOrNull()?.message ?: "注册失败"
-                if (ok) _loginResult.emit(LoginResult(true, "注册成功", token ?: "", username))
+                if (ok) {
+                    runCatching { onCredentials?.invoke(username, password) }
+                    _loginResult.emit(LoginResult(true, "注册成功", token ?: "", username))
+                }
                 withContext(Dispatchers.IO) { reply(jsonOf(
                     "ok" to ok,
                     "msg" to (if (ok) "注册成功" else err),

@@ -21,6 +21,8 @@ sealed interface Screen {
         val sections: List<com.cycitv.data.dto.SectionDto> = emptyList(),
         val directUrl: String? = null, // 调试/兜底:绕过 play-url 接口直接播该地址(支持 file://)
     ) : Screen
+    /** 备用源 girigiri 播放页(时间表切换源后点番进入):gvId=站内 id,title=番名 */
+    data class GiriPlay(val gvId: Long, val title: String) : Screen
 }
 
 class NavController(initial: Screen = Screen.Home) {

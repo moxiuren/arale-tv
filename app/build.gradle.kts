@@ -14,13 +14,36 @@ android {
         applicationId = "com.cycitv"
         minSdk = 23
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.1.2"
+
+        // 目标设备（海思 Hi3751V660，Z6X Pro 2025 三色激光）用户空间只有 armeabi-v7a，
+        // 只打 v7a 可减掉约 6 MB 的 arm64/x86 原生库，并避免安装时的 ABI 选择开销
+        ndk {
+            abiFilters += "armeabi-v7a"
+        }
+    }
+
+    signingConfigs {
+        // 固定 debug 密钥并纳入仓库：CI 与本地编译必须同签名，
+        // 否则新版本装不上设备上已有的 v0.1.1（签名冲突只能卸载重装，会丢数据）
+        getByName("debug") {
+            storeFile = file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -30,6 +53,8 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+        // 官方 Compose for TV (androidx.tv.material3) 组件均为实验 API, 全局放行
+        freeCompilerArgs += listOf("-opt-in=androidx.tv.material3.ExperimentalTvMaterial3Api")
     }
     buildFeatures {
         compose = true

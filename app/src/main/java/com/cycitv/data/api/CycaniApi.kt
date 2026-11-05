@@ -22,6 +22,12 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 class ApiException(val apiCode: Int, message: String) : IOException(message)
@@ -46,7 +52,49 @@ class CycaniApi(
     private val bootstrapLock = Any()
 
     // 认证 token 由用户登录后注入(存 DataStore,不进仓库);为空则不发 Authorization
+    @Volatile
     var token: String? = null
+
+    /**
+     * token 失效时的静默重登器(由 App 注入): 返回新 token, null 表示无法重登。
+     * 站方 token 是 7 天有效的 JWT,过期后所有鉴权接口返回 HTTP 401 / 业务码 1002。
+     */
+    @Volatile
+    var relogin: (suspend () -> String?)? = null
+
+    /** 同一时刻只允许一次重登,避免并发请求把登录接口打爆 */
+    private val reloginMutex = Mutex()
+
+    /** 重登并刷新内存 token; 返回是否拿到新 token */
+    private suspend fun refreshToken(): Boolean {
+        val rl = relogin ?: return false
+        return reloginMutex.withLock {
+            val t = try {
+                rl()
+            } catch (e: Exception) {
+                android.util.Log.w("CYC", "静默重登失败: " + e.message)
+                null
+            }
+            if (!t.isNullOrBlank()) {
+                token = t
+                android.util.Log.i("CYC", "token 已刷新")
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    /**
+     * 鉴权请求包装: 遇 401 / 1002 时静默重登一次再原样重试。
+     * 只重试一次(重试体不再包 authed),不会无限递归。
+     */
+    private suspend fun <T> authed(block: suspend () -> T): T =
+        try {
+            block()
+        } catch (e: ApiException) {
+            if ((e.apiCode == 401 || e.apiCode == 1002) && refreshToken()) block() else throw e
+        }
 
     // ---- 用户认证(每个用户自行登录,不内置任何人 token) ----
     private fun openPost(urlStr: String, body: String): HttpURLConnection {
@@ -172,6 +220,12 @@ class CycaniApi(
         path: String,
         query: Map<String, Any?> = emptyMap(),
         parse: (String) -> T,
+    ): T = authed { doGet(path, query, parse) }
+
+    private suspend fun <T> doGet(
+        path: String,
+        query: Map<String, Any?>,
+        parse: (String) -> T,
     ): T = withContext(Dispatchers.IO) {
         bootstrap()
         val qs = query.entries
@@ -202,12 +256,80 @@ class CycaniApi(
             get("/video-zones") { json.decodeFromString<ApiEnvelope<ZoneListData>>(it).data?.list ?: emptyList() }
         }
 
-    suspend fun videos(zoneId: Int, page: Int, pageSize: Int = 48, orderBy: String = "hits"): VideoListData =
-        cached("videos:$zoneId:$page:$pageSize:$orderBy", TTL_5M) {
-            get("/videos", mapOf("zone_id" to zoneId, "page" to page, "page_size" to pageSize, "order_by" to orderBy)) {
+    /**
+     * 列表接口。
+     * orderBy: hits(热度) / score(评分) / update_time(更新)
+     * tag: 站方标签, 形如 "2026年10月"(季度番) 或 "恋爱"(分类); 实测可用且支持分页, null 表示不筛
+     */
+    suspend fun videos(
+        zoneId: Int,
+        page: Int,
+        pageSize: Int = 48,
+        orderBy: String = "hits",
+        tag: String? = null,
+        year: String? = null,
+    ): VideoListData =
+        cached(
+            "videos:" + zoneId + ":" + page + ":" + pageSize + ":" + orderBy + ":" + (tag ?: "") + ":" + (year ?: ""),
+            TTL_5M,
+        ) {
+            get(
+                "/videos",
+                mapOf(
+                    "zone_id" to zoneId,
+                    "page" to page,
+                    "page_size" to pageSize,
+                    "order_by" to orderBy,
+                    "tag" to tag,
+                    "year" to year,
+                ),
+            ) {
                 json.decodeFromString<ApiEnvelope<VideoListData>>(it).data ?: VideoListData()
             }
         }
+
+    /**
+     * 取一部番的更新进度。
+     * 列表接口不返回 play_from/completed, 只能查详情; 详情自带 5 分钟内存缓存。
+     */
+    suspend fun updateInfo(id: Long): UpdateInfo? = try {
+        val d = videoDetail(id)
+        val raw = d.playFrom.maxOfOrNull { it.count } ?: 0
+        // 判断"待开播"只能用 remarks 里的「即将」字样(实测: 魔法骑士雷阿斯 remarks=[即将放送])。
+        // 不能拿 "N|周X HH:MM后" 反推: FX战士久留美(remarks=[01|周四20:35后])与
+        // 药屋少女第三季(remarks=[1|周五23:05后]) 字段完全同构, 但前者第 1 集确实已经播出,
+        // 按"集数>=count 就减一"的规则会把已开播的番误判成待开播。
+        val real = if (d.remarks.contains("即将")) 0 else raw
+        UpdateInfo(
+            updated = real,
+            total = d.total,
+            completed = d.completed,
+            publishDate = d.publishDate,
+            coverUrl = d.coverUrl,
+        )
+    } catch (e: Exception) {
+        android.util.Log.w("CYC", "updateInfo " + id + " 失败: " + e.message)
+        null
+    }
+
+    /**
+     * 并发补全一批番的更新进度(限流, 单条失败静默跳过)。
+     * 实测 20 条限流 8 约 0.5 秒, 可随列表加载后台补齐。
+     */
+    suspend fun fillUpdates(
+        ids: List<Long>,
+        concurrency: Int = 8,
+        onEach: suspend (Long, UpdateInfo) -> Unit,
+    ) = coroutineScope {
+        val sem = Semaphore(concurrency)
+        ids.forEach { id ->
+            launch {
+                sem.withPermit {
+                    updateInfo(id)?.let { onEach(id, it) }
+                }
+            }
+        }
+    }
 
     suspend fun search(q: String, page: Int, pageSize: Int = 48, zoneId: Int? = null): List<VideoCardDto> =
         get("/videos/search", mapOf("q" to q, "page" to page, "page_size" to pageSize, "zone_id" to zoneId)) {
@@ -244,8 +366,10 @@ class CycaniApi(
         return out
     }
 
-    suspend fun playUrl(sectionId: Long): PlayUrlData = withContext(Dispatchers.IO) {
-        val conn = open("https://mapi.cycback.org/v2/sections/$sectionId/play-url")
+    suspend fun playUrl(sectionId: Long): PlayUrlData = authed { doPlayUrl(sectionId) }
+
+    private suspend fun doPlayUrl(sectionId: Long): PlayUrlData = withContext(Dispatchers.IO) {
+        val conn = open("https://mapi.cycback.org/v2/sections/" + sectionId + "/play-url")
         val body = readBody(conn)
         val envelope = json.decodeFromString<ApiEnvelope<PlayUrlData>>(body)
         if (envelope.code != 0) throw ApiException(envelope.code, envelope.msg)
@@ -284,6 +408,20 @@ class CycaniApi(
         return v
     }
 }
+
+/** 一部番的更新进度: 已更新集数 / 总集数 / 是否完结 */
+data class UpdateInfo(
+    val updated: Int,
+    val total: Int,
+    val completed: Boolean,
+    /** 站方发布日期(形如 2026-10-02), 首页按它从新到旧排序 */
+    val publishDate: String = "",
+    /**
+     * 封面地址。updateInfo 内部本来就请求了 videoDetail, 顺手带出来,
+     * 供"继续观看"给历史记录补封面(历史表里的 coverUrl 早期版本从未写入)。
+     */
+    val coverUrl: String = "",
+)
 
 @kotlinx.serialization.Serializable
 internal data class Envelope(val code: Int, val msg: String = "")

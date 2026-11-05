@@ -1,6 +1,7 @@
 package com.cycitv.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,7 +18,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -42,6 +43,7 @@ import com.cycitv.data.dto.SectionDto
 import com.cycitv.data.dto.VideoDetailDto
 import com.cycitv.ui.components.tvFocus
 import com.cycitv.ui.theme.Primary
+import com.cycitv.ui.theme.CycShape
 import com.cycitv.ui.theme.SurfaceHi
 import com.cycitv.ui.theme.TextDim
 import com.cycitv.ui.theme.TextMain
@@ -88,7 +90,7 @@ fun DetailScreen(
                 model = d.coverUrl,
                 contentDescription = d.title,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.width(220.dp).height(312.dp).background(Color(0xFF23232E), RoundedCornerShape(14.dp))
+                modifier = Modifier.width(220.dp).height(312.dp).clip(CycShape.card).background(SurfaceHi)
             )
             Column(Modifier.padding(start = 26.dp).weight(1f)) {
                 Text(d.title, fontSize = 30.sp, color = TextMain)
@@ -109,7 +111,10 @@ fun DetailScreen(
                 Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     d.tags.take(6).forEach { t ->
                         Text(t, fontSize = 14.sp, color = Primary,
-                            modifier = Modifier.background(Color(0x1A7AA2FF), RoundedCornerShape(8.dp)).padding(horizontal = 10.dp, vertical = 4.dp))
+                            modifier = Modifier
+                                .clip(CycShape.badge)
+                                .border(1.dp, Primary.copy(alpha = 0.45f), CycShape.badge)
+                                .padding(horizontal = 10.dp, vertical = 4.dp))
                     }
                 }
             }
@@ -139,7 +144,7 @@ fun DetailScreen(
                 CircularProgressIndicator(Modifier.align(Alignment.Center))
             } else {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(8),
+                    columns = GridCells.Adaptive(minSize = 148.dp),
                     state = grid,
                     contentPadding = PaddingValues(top = 8.dp, bottom = 30.dp),
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -174,7 +179,8 @@ private fun SectionCell(s: SectionDto, modifier: Modifier = Modifier) {
         modifier = modifier
             .fillMaxWidth()
             .height(64.dp)
-            .background(SurfaceHi, RoundedCornerShape(10.dp)),
+            .clip(CycShape.chip)
+            .background(SurfaceHi),
         contentAlignment = Alignment.Center
     ) {
         Text(

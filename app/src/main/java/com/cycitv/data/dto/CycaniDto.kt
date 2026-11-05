@@ -22,6 +22,15 @@ data class ZoneDto(
     val id: Int,
     val name: String,
     val sort: Int = 0,
+    /** 站方提供的筛选项(年份/分类), 用于分类页的季度选择 */
+    val filters: ZoneFiltersDto? = null,
+)
+
+@Serializable
+data class ZoneFiltersDto(
+    val categories: List<String> = emptyList(),
+    /** 形如 ["2026","2025",...], 站方为字符串数组 */
+    val years: List<String> = emptyList(),
 )
 
 @Serializable
@@ -32,6 +41,8 @@ data class VideoCardDto(
     val description: String = "",
     @SerialName("cover_url") val coverUrl: String = "",
     val remarks: String = "",
+    /** 站方发布日期(形如 2026-10-02), 用于首页"最近更新"排序 */
+    @SerialName("publish_date") val publishDate: String = "",
     val area: String = "",
     val year: Int? = null,
     val version: String = "",
@@ -79,10 +90,16 @@ data class VideoDetailDto(
     val score: Double? = null,
     val hits: Long = 0,
     val total: Int = 0,
+    /** 是否完结(站方 completed 字段) */
+    val completed: Boolean = false,
     val director: List<String> = emptyList(),
     val actor: List<String> = emptyList(),
     val tags: List<String> = emptyList(),
     val state: String = "",
+    /** 形如 "1|周五23:05后": 第 1 集将于该时刻更新(此时 play_from 里那条多半还是先导PV) */
+    val remarks: String = "",
+    /** 站方发布日期(形如 2026-10-02), 用于首页"最近更新"排序 */
+    @SerialName("publish_date") val publishDate: String = "",
     @SerialName("play_from") val playFrom: List<PlayFromDto> = emptyList(),
     @SerialName("watch_progress") val watchProgress: WatchProgressDto? = null,
 )

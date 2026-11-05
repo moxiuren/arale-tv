@@ -1,6 +1,7 @@
 package com.cycitv.ui.screens
 
 import android.content.Context
+import android.os.SystemClock
 import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -20,8 +21,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -34,6 +35,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -51,71 +53,31 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
-import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
-import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.ui.PlayerView
 import com.cycitv.App
+import com.cycitv.data.api.GirigiriApi
 import com.cycitv.data.dto.SectionDto
 import com.cycitv.data.room.HistoryEntity
 import com.cycitv.ui.components.tvFocus
+import com.cycitv.ui.theme.CycShape
 import com.cycitv.ui.theme.Primary
+import com.cycitv.ui.theme.PrimaryDim
 import com.cycitv.ui.theme.Surface
 import com.cycitv.ui.theme.TextDim
 import com.cycitv.ui.theme.TextMain
+import com.cycitv.util.PlayerFactory
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f, 4f) // 看动漫同款速度档
 
-/** 创建播放器;software=true 时只允许软件 AVC 解码器(硬解崩溃时用于绕过 OMX.MS.AVC.Decoder 的 bug) */
-private fun createPlayer(ctx: Context, software: Boolean, bandwidthMeter: DefaultBandwidthMeter? = null): ExoPlayer {
-    val renderersFactory = DefaultRenderersFactory(ctx).apply {
-        setEnableDecoderFallback(true)
-        // 小米 MStar 硬解对 C2 异步队列(DynamicANWBuffer)适配有 bug,个别流 configure 即崩;强制同步队列规避
-        forceDisableMediaCodecAsynchronousQueueing()
-        if (software) {
-            setMediaCodecSelector(object : MediaCodecSelector {
-                override fun getDecoderInfos(
-                    mimeType: String,
-                    requiresSecureDecoder: Boolean,
-                    requiresTunnelingDecoder: Boolean,
-                ): List<MediaCodecInfo> {
-                    val all = try {
-                        MediaCodecUtil.getDecoderInfos(mimeType, requiresSecureDecoder, requiresTunnelingDecoder)
-                    } catch (_: Exception) {
-                        emptyList()
-                    }
-                    if (MimeTypes.VIDEO_H264 == mimeType) {
-                        // 小米 MStar 硬解(OMX.MS.AVC)对个别流运行时崩溃,只保留 Google 软解
-                        return all.filter { it.name.contains("c2.android.avc") || it.name.contains("OMX.google.h264") }
-                    }
-                    return all
-                }
-            })
-        }
-    }
-    return ExoPlayer.Builder(ctx, renderersFactory)
-        .apply { if (bandwidthMeter != null) setBandwidthMeter(bandwidthMeter) }
-        .setMediaSourceFactory(
-            androidx.media3.exoplayer.source.DefaultMediaSourceFactory(ctx).setDataSourceFactory(
-                androidx.media3.datasource.DefaultHttpDataSource.Factory()
-                    .setConnectTimeoutMs(20_000) // CDN 首字节慢(实测 ~8.4s), 默认 8s 超时导致无限重试恶性循环
-                    .setReadTimeoutMs(20_000)
-                    .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-            )
-        )
-        .build().apply {
-        playWhenReady = true
-        repeatMode = Player.REPEAT_MODE_OFF
-    }
-}
+/** 创建播放器;software=true 时只允许软件 AVC 解码器(硬解崩溃时用于绕过厂商解码器 bug) */
+private fun createPlayer(ctx: Context, software: Boolean, bandwidthMeter: DefaultBandwidthMeter? = null): ExoPlayer =
+    PlayerFactory.create(ctx, software, bandwidthMeter)
 
 @Composable
 fun PlayScreen(
@@ -140,10 +102,17 @@ fun PlayScreen(
     var showControls by remember { mutableStateOf(false) }
     var showEpList by remember { mutableStateOf(false) }
     var showSpeedList by remember { mutableStateOf(false) }
+    var showGiriList by remember { mutableStateOf(false) }  // girigiri 切源候选弹层
+    var giriItems by remember { mutableStateOf<List<GirigiriApi.Item>>(emptyList()) }
+    var giriSel by remember { mutableIntStateOf(0) }
+    var giriLoading by remember { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
     var hideCountdown by remember { mutableLongStateOf(0L) } // 控制条自动隐藏倒计时(ms)
     var wasPlayingOnStop by remember { mutableStateOf(false) }   // 退后台前是否在播(HOME 恢复用)
     var playerCodeNow by remember { mutableStateOf(playerCode) }
+    // 封面地址: 详情接口才返回, 拉到后供"继续观看"列表展示。
+    // 原实现 HistoryEntity.coverUrl 字段存在但从未被写入, 恒为空串。
+    var animeCover by remember { mutableStateOf("") }
     var speedIdx by remember { mutableIntStateOf(2) } // 1.0x
     var resolving by remember { mutableStateOf(false) } // 正在请求播放地址
     var buffering by remember { mutableStateOf(true) }  // 播放器缓冲中
@@ -152,7 +121,7 @@ fun PlayScreen(
     // 网络带宽表:供"视频信息"按钮显示实时网速
     val bandwidthMeter = remember { DefaultBandwidthMeter.Builder(ctx).build() }
     var bandwidthKbps by remember { mutableStateOf(0L) } // 由 ticker 刷新
-    // 自管控制条焦点(Compose 焦点树在 AnimatedContent 嵌套下不可靠):0=播放/暂停 1=下一话 2=重播 3=选集 4=速度 5=信息 6=进度条
+    // 自管控制条焦点(Compose 焦点树在 AnimatedContent 嵌套下不可靠):0=播放/暂停 1=下一话 2=重播 3=选集 4=速度 5=信息 6=切源 7=进度条
     var ctrlSel by remember { mutableIntStateOf(0) }
     // 弹层自管焦点:选集/速度弹层的选项行(Compose 焦点树被 PlayerView 阻断,必须自管)
     var panelSel by remember { mutableIntStateOf(0) }
@@ -160,26 +129,22 @@ fun PlayScreen(
     // 进度/时长由 ticker 驱动,保证进度条和时间为实时值
     var posMs by remember { mutableLongStateOf(0L) }
     var durMs by remember { mutableLongStateOf(0L) }
-    var seekHint by remember { mutableStateOf<String?>(null) }
-    // OSD 反馈图标(OK 切换播放/暂停时中央短暂显示)
-    var osdIcon by remember { mutableStateOf<String?>(null) }
+    // 统一的中央 OSD: 文本 + 过期时刻。清除交给 ticker, 不再依赖 LaunchedEffect(key),
+    // 彻底杜绝「提示残留不消失」(key 未变化时 LaunchedEffect 不重启的历史坑)。
+    var osdText by remember { mutableStateOf<String?>(null) }
+    var osdUntil by remember { mutableLongStateOf(0L) }
+    fun showOsd(t: String, ms: Long = 1500) {
+        osdText = t
+        osdUntil = SystemClock.elapsedRealtime() + ms
+    }
+    // 长按加速跳转: 以「按下瞬间的位置」为固定起点做累积位移, 长按才能一路加速且数值准确
+    var holdBase by remember { mutableLongStateOf(-1L) }
+    var holdAccum by remember { mutableLongStateOf(0L) }
+    var holdLastAt by remember { mutableLongStateOf(0L) }
+    var giriTried by remember { mutableStateOf(false) }  // 当前播放已尝试过 girigiri 备用源(防死循环)
+    var sourceNow by remember { mutableStateOf("主站") }  // 当前播放来源:主站 / 备用源
+    var currentSectionId by remember { mutableLongStateOf(initialSectionId) }
     var paused by remember { mutableStateOf(false) } // 播放器实际暂停中(非"加载流程"标志)
-
-    // seek 提示短暂显示后消失
-    LaunchedEffect(seekHint) {
-        if (seekHint != null) {
-            delay(1200)
-            seekHint = null
-        }
-    }
-
-    // OSD 图标短暂显示后消失
-    LaunchedEffect(osdIcon) {
-        if (osdIcon != null) {
-            delay(1000)
-            osdIcon = null
-        }
-    }
 
     // 可重建播放器:硬解崩溃时切软解重建
     var player by remember { mutableStateOf(createPlayer(ctx, softwareDecode, bandwidthMeter)) }
@@ -190,6 +155,7 @@ fun PlayScreen(
             posMs = player.currentPosition
             durMs = player.duration
             paused = !player.isPlaying
+            if (osdText != null && SystemClock.elapsedRealtime() > osdUntil) osdText = null
             bandwidthKbps = bandwidthMeter.bitrateEstimate / 1000 // 实时网速 Kbps
             // 控制条自动隐藏:播放中 5 秒无按键操作
             if (showControls && player.isPlaying) {
@@ -227,7 +193,7 @@ fun PlayScreen(
                     if (wasPlayingOnStop) {
                         wasPlayingOnStop = false
                         player.play()
-                        osdIcon = "▶"
+                        showOsd("▶")
                     }
                     win?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 }
@@ -239,6 +205,76 @@ fun PlayScreen(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             win?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    // girigiri 切源:打开全库候选列表让用户选番(手动选择,不依赖脆弱的自动匹配)
+    // preferTitle 非空时(cycani 失败自动兜底),把候选按标题相似度排序,最像的排最前
+    fun openGiriPicker(preferTitle: String? = null) {
+        showEpList = false; showSpeedList = false; showInfo = false
+        if (giriLoading) return
+        giriLoading = true
+        showGiriList = true
+        giriItems = emptyList()
+        giriSel = 0
+        scope.launch {
+            try {
+                val items = app.giri.allLibrary()
+                giriItems = if (preferTitle.isNullOrBlank()) items
+                else {
+                    val kw = preferTitle.trim().lowercase()
+                    items.sortedByDescending { item ->
+                        val t = item.title.trim().lowercase()
+                        when {
+                            t == kw -> 100
+                            t.contains(kw) || kw.contains(t) -> 60
+                            t.take(2) == kw.take(2) && t.take(2).isNotBlank() -> 30
+                            else -> 0
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                giriItems = emptyList()
+            }
+            giriLoading = false
+        }
+    }
+
+    // 选中 girigiri 番 → 拉详情 → 按当前集号播放
+    fun playGiriItem(item: GirigiriApi.Item?) {
+        if (item == null) return
+        showGiriList = false
+        scope.launch {
+            resolving = true
+            try {
+                val d = app.giri.detail(item.gvId)
+                val eps = d.episodes
+                if (eps.isEmpty()) throw IllegalStateException("该番无播放集")
+                // 当前集号:cycani 选集标题 "第05集" → 5
+                val epNo = try {
+                    val all = app.api.allSections(videoId, playerCodeNow)
+                    val cur = all.find { it.id == currentSectionId }
+                    Regex("(\\d+)").find(cur?.title ?: "")?.groupValues?.getOrNull(1)?.toIntOrNull()
+                } catch (_: Exception) { null }
+                // 按集号匹配 girigiri 播放路径 /playGV{id}-{sid}-{n}/;匹配不到用序号
+                val ep = (if (epNo != null) {
+                    eps.firstOrNull { Regex("-(\\d+)/$").find(it)?.groupValues?.get(1)?.toIntOrNull() == epNo }
+                } else null)
+                    ?: eps.getOrNull((epNo ?: 1) - 1)
+                    ?: eps.first()
+                val url = app.giri.playUrl(ep)
+                android.util.Log.e("CYC", "giri 切源: ${d.title} 集号=$epNo ep=$ep -> ${url.take(60)}")
+                resolving = false
+                sourceNow = "备用源"
+                showOsd("🔁")
+                player.setMediaItem(MediaItem.fromUri(url))
+                player.prepare()
+                player.play()
+                playing = true
+            } catch (e: Exception) {
+                resolving = false
+                errorMsg = "备用源播放失败: ${e.message}"
+            }
         }
     }
 
@@ -258,6 +294,7 @@ fun PlayScreen(
                 player.prepare()
                 player.play()
                 sectionId = id
+                currentSectionId = id
                 // 断点续播
                 val hist = try { app.db().historyDao().bySection(id) } catch (_: Exception) { null }
                 if (hist != null && hist.progressMs > 10_000 && hist.progressMs < hist.durationMs - 10_000) {
@@ -269,13 +306,14 @@ fun PlayScreen(
                     playerCodeNow = players[next]
                     sections = try { app.api.allSections(videoId, playerCodeNow) } catch (_: Exception) { sections }
                     loadSection(id, next)
-                } else {
-                    errorMsg = if (e is com.cycitv.data.api.ApiException && (e.apiCode == 401 || e.apiCode == 1002)) {
-                        "未登录或登录已过期\n请到「设置 → 登录账号」扫码登录后重试"
-                    } else {
-                        "播放失败: ${e.message}"
-                    }
+                } else if (e is com.cycitv.data.api.ApiException && (e.apiCode == 401 || e.apiCode == 1002)) {
+                    // 能走到这里说明 API 层的静默续登也没成功(凭据缺失或已失效)
+                    errorMsg = "登录已失效，自动续登失败\n请到「设置 → 登录账号」重新扫码登录"
                     playing = false
+                } else {
+                    // 主源失败(坏节点/超时) → 弹 girigiri 候选列表,当前番优先
+                    errorMsg = null
+                    openGiriPicker(animeTitle)
                 }
             }
         }
@@ -326,6 +364,10 @@ fun PlayScreen(
                     scope.launch {
                         try { switchToSoftwareDecoder() } catch (_: Exception) {}
                     }
+                } else if (directUrl == null && !giriTried) {
+                    // 主源流拉不动(CDN 坏节点) → 弹 girigiri 候选列表,当前番优先
+                    giriTried = true
+                    scope.launch { openGiriPicker(animeTitle) }
                 } else {
                     errorMsg = "播放出错: ${error.errorCodeName}\n${error.message?.take(160) ?: ""}"
                 }
@@ -348,6 +390,7 @@ fun PlayScreen(
             scope.launch {
                 try {
                     val d = app.api.videoDetail(videoId)
+                    if (d.coverUrl.isNotBlank()) animeCover = d.coverUrl
                     val ps = d.playFrom.map { it.code }.ifEmpty { listOf(playerCode) }
                     if (ps.none { it == playerCodeNow }) playerCodeNow = ps.first()
                     val secs = app.api.allSections(videoId, playerCodeNow)
@@ -361,6 +404,7 @@ fun PlayScreen(
         }
         // 无传入选集:完整加载后播放
         val d = try { app.api.videoDetail(videoId) } catch (_: Exception) { null }
+        if (!d?.coverUrl.isNullOrBlank()) animeCover = d.coverUrl
         players = d?.playFrom?.map { it.code }?.ifEmpty { listOf(playerCode) } ?: listOf(playerCode)
         if (players.none { it == playerCodeNow }) playerCodeNow = players.first()
         sections = try { app.api.allSections(videoId, playerCodeNow) } catch (_: Exception) { emptyList() }
@@ -371,52 +415,102 @@ fun PlayScreen(
         }
     }
 
+    // 进度落盘: 抽成一个函数, 周期上报与退出前补写共用同一份字段组装,
+    // 避免两处各写一份、日后加字段时漏改其中一处
+    suspend fun saveProgress(pos: Long, dur: Long, sid: Long) {
+        if (dur <= 0 || pos <= 0) return
+        try {
+            app.db().historyDao().upsert(
+                HistoryEntity(
+                    sectionId = sid,
+                    animeId = videoId,
+                    title = animeTitle,
+                    coverUrl = animeCover,
+                    sectionTitle = sections.firstOrNull { it.id == sid }?.title ?: "",
+                    progressMs = pos,
+                    durationMs = dur,
+                )
+            )
+        } catch (_: Exception) {}
+    }
+
     // 周期上报进度
     LaunchedEffect(sectionId) {
         while (true) {
             delay(10_000)
-            val pos = player.currentPosition
-            val dur = player.duration
-            if (dur > 0 && pos > 0) {
-                try {
-                    app.db().historyDao().upsert(
-                        HistoryEntity(
-                            sectionId = sectionId,
-                            animeId = videoId,
-                            title = animeTitle,
-                            sectionTitle = sections.firstOrNull { it.id == sectionId }?.title ?: "",
-                            progressMs = pos,
-                            durationMs = dur,
-                        )
-                    )
-                } catch (_: Exception) {}
-            }
+            saveProgress(player.currentPosition, player.duration, sectionId)
         }
     }
 
-    // 播放结束自动下一集
-    LaunchedEffect(Unit) {
-        var last = -1L
-        while (true) {
-            delay(1500)
+    // 退出前补写一次: 每 10 秒一写意味着最多丢 10 秒, 短片段上就是"续播回到开头"
+    DisposableEffect(sectionId) {
+        onDispose {
             val pos = player.currentPosition
             val dur = player.duration
-            if (pos > 0 && dur > 0 && pos > dur - 8000 && last != sectionId) {
-                last = sectionId
-                val idx = sections.indexOfFirst { it.id == sectionId }
-                val next = sections.getOrNull(idx + 1)
-                if (next != null) {
-                    sectionId = next.id
-                    loadSection(next.id)
-                }
-            }
+            val sid = sectionId
+            // onDispose 是同步的, 落盘必须丢到应用级 scope, 否则协程随页面一起被取消
+            app.scope.launch { saveProgress(pos, dur, sid) }
         }
     }
 
-    fun seek(deltaMs: Long) {
-        player.seekTo((player.currentPosition + deltaMs).coerceAtLeast(0))
-        val s = deltaMs / 1000
-        seekHint = if (deltaMs > 0) "+$s 秒" else "$s 秒"
+    // 播放结束自动下一集。
+    // 修正: 原来用「剩余 8 秒」预判(pos > dur - 8000)就切集, 会把片尾最后几秒整段吃掉,
+    // 导致视频看着"没播完"。改为等播放器真正进入 STATE_ENDED 才切。
+    val curSectionId by rememberUpdatedState(sectionId)
+    val curSections by rememberUpdatedState(sections)
+    DisposableEffect(player) {
+        val p = player
+        val endListener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState != Player.STATE_ENDED) return
+                val idx = curSections.indexOfFirst { it.id == curSectionId }
+                val next = curSections.getOrNull(idx + 1) ?: return
+                sectionId = next.id
+                loadSection(next.id)
+            }
+        }
+        p.addListener(endListener)
+        onDispose { p.removeListener(endListener) }
+    }
+
+    /** 毫秒 -> 时:分:秒 */
+    fun fmtTime(ms: Long): String {
+        val total = (ms / 1000).coerceAtLeast(0)
+        val h = total / 3600
+        val m = (total % 3600) / 60
+        val s = total % 60
+        return if (h > 0) String.format("%d:%02d:%02d", h, m, s) else String.format("%d:%02d", m, s)
+    }
+
+    /**
+     * 左右键跳转:
+     *  - 按一下 = 固定 10 秒(连按 5 次正好 50 秒, 步长不累积)
+     *  - 长按 = 按 repeatCount 提速(20s -> 30s -> 60s -> 120s), 中央 OSD 显示目标时间实时递增
+     *  - 以按下瞬间的位置为固定起点累积, 避免 seek 未生效时越跳越偏
+     */
+    fun seekKey(forward: Boolean, repeatCount: Int) {
+        val now = SystemClock.elapsedRealtime()
+        // 距上次按键超过 700ms 视为新的一轮(遥控器松手后重新按)
+        if (holdBase < 0 || now - holdLastAt > 700) {
+            holdBase = player.currentPosition
+            holdAccum = 0
+        }
+        val stepMs = when {
+            repeatCount <= 0 -> 10_000L
+            repeatCount < 4 -> 20_000L
+            repeatCount < 10 -> 30_000L
+            repeatCount < 20 -> 60_000L
+            else -> 120_000L
+        }
+        holdAccum += if (forward) stepMs else -stepMs
+        val durRaw = player.duration
+        val dur = if (durRaw > 0) durRaw else Long.MAX_VALUE
+        val target = (holdBase + holdAccum).coerceIn(0L, dur)
+        holdAccum = target - holdBase
+        player.seekTo(target)
+        holdLastAt = now
+        val sign = if (forward) "+" else "-"
+        showOsd(fmtTime(target) + "  " + sign + (kotlin.math.abs(holdAccum) / 1000) + "s", 1600)
     }
 
     fun goEpisode(delta: Int) {
@@ -431,7 +525,7 @@ fun PlayScreen(
         showSpeedList = false
         player.seekTo(0)
         if (!player.isPlaying) player.play()
-        osdIcon = "↻"
+        showOsd("↻")
     }
 
     Box(
@@ -497,6 +591,19 @@ fun PlayScreen(
                         else -> false
                     }
 
+                    // girigiri 切源弹层导航(自管焦点:UP/DOWN 选番,OK 确认切源)
+                    showGiriList -> when (code) {
+                        KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_M,
+                        KeyEvent.KEYCODE_DPAD_LEFT -> { showGiriList = false; true }
+                        KeyEvent.KEYCODE_DPAD_UP -> { giriSel = (giriSel - 1).coerceAtLeast(0); true }
+                        KeyEvent.KEYCODE_DPAD_DOWN -> { giriSel = (giriSel + 1).coerceAtMost(giriItems.size - 1); true }
+                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_SPACE -> {
+                            playGiriItem(giriItems.getOrNull(giriSel))
+                            true
+                        }
+                        else -> false
+                    }
+
                     // 右侧信息弹层导航
                     showInfo -> when (code) {
                         KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_M,
@@ -511,21 +618,21 @@ fun PlayScreen(
                         KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_M -> { showControls = false; true }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
                             hideCountdown = 0
-                            if (ctrlSel == 6) seek(-10_000) else ctrlSel = (ctrlSel - 1).coerceAtLeast(0)
+                            if (ctrlSel == 7) seekKey(false, ev.nativeKeyEvent.repeatCount) else ctrlSel = (ctrlSel - 1).coerceAtLeast(0)
                             true
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             hideCountdown = 0
-                            if (ctrlSel == 6) seek(10_000) else ctrlSel = (ctrlSel + 1).coerceAtMost(6)
+                            if (ctrlSel == 7) seekKey(true, ev.nativeKeyEvent.repeatCount) else ctrlSel = (ctrlSel + 1).coerceAtMost(7)
                             true
                         }
-                        KeyEvent.KEYCODE_DPAD_UP -> { hideCountdown = 0; if (ctrlSel == 6) ctrlSel = 0; true }
-                        KeyEvent.KEYCODE_DPAD_DOWN -> { hideCountdown = 0; ctrlSel = if (ctrlSel == 6) 0 else 6; true }
+                        KeyEvent.KEYCODE_DPAD_UP -> { hideCountdown = 0; if (ctrlSel == 7) ctrlSel = 0; true }
+                        KeyEvent.KEYCODE_DPAD_DOWN -> { hideCountdown = 0; ctrlSel = if (ctrlSel == 7) 0 else 7; true }
                         KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_SPACE -> {
                             hideCountdown = 0
                             when (ctrlSel) {
-                                0 -> if (player.isPlaying) { player.pause(); osdIcon = "⏸" }
-                                else { player.play(); osdIcon = "▶" }
+                                0 -> if (player.isPlaying) { player.pause(); showOsd("⏸") }
+                                else { player.play(); showOsd("▶") }
                                 1 -> { showEpList = false; showSpeedList = false; showInfo = false; goEpisode(1) }
                                 2 -> replayCurrent()
                                 3 -> {
@@ -537,7 +644,8 @@ fun PlayScreen(
                                     showSpeedList = true; showEpList = false; showInfo = false
                                 }
                                 5 -> { showInfo = true; showEpList = false; showSpeedList = false }
-                                6 -> seek(0)
+                                6 -> openGiriPicker()
+                                7 -> { player.seekTo(0); showOsd("00:00") }
                             }
                             true
                         }
@@ -546,14 +654,14 @@ fun PlayScreen(
 
                     // 默认态(控制条隐藏):OK 暂停并呼出控制条;UP/MENU 只呼出不暂停;左右 seek
                     else -> when (code) {
-                        KeyEvent.KEYCODE_DPAD_LEFT -> { seek(-10_000); true }
-                        KeyEvent.KEYCODE_DPAD_RIGHT -> { seek(10_000); true }
+                        KeyEvent.KEYCODE_DPAD_LEFT -> { seekKey(false, ev.nativeKeyEvent.repeatCount); true }
+                        KeyEvent.KEYCODE_DPAD_RIGHT -> { seekKey(true, ev.nativeKeyEvent.repeatCount); true }
                         KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_M -> {
                             showControls = true; true
                         }
                         KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_SPACE -> {
                             showControls = true
-                            if (player.isPlaying) { player.pause(); osdIcon = "⏸" }
+                            if (player.isPlaying) { player.pause(); showOsd("⏸") }
                             true
                         }
                         KeyEvent.KEYCODE_0 -> { sectionId = sections.firstOrNull()?.id ?: sectionId; true }
@@ -610,7 +718,8 @@ fun PlayScreen(
                     .align(Alignment.CenterEnd)
                     .fillMaxHeight(0.85f)
                     .width(300.dp)
-                    .background(Color(0xE6121218), RoundedCornerShape(12.dp))
+                    .clip(CycShape.panel)
+                    .background(Color(0xE6121218))
                     .padding(vertical = 16.dp)
             ) {
                 Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
@@ -623,10 +732,8 @@ fun PlayScreen(
                                     .fillMaxWidth()
                                     .clickable { sectionId = s.id; loadSection(s.id); showEpList = false }
                                     .height(46.dp)
-                                    .background(
-                                        if (sel) Primary else Surface,
-                                        RoundedCornerShape(8.dp)
-                                    )
+                                    .clip(CycShape.chip)
+                                    .background(if (sel) PrimaryDim else Surface)
                                     .padding(horizontal = 14.dp),
                                 contentAlignment = Alignment.CenterStart
                             ) {
@@ -652,7 +759,8 @@ fun PlayScreen(
                 Modifier
                     .align(Alignment.CenterEnd)
                     .width(220.dp)
-                    .background(Color(0xE6121218), RoundedCornerShape(12.dp))
+                    .clip(CycShape.panel)
+                    .background(Color(0xE6121218))
                     .padding(vertical = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -669,7 +777,8 @@ fun PlayScreen(
                                 showSpeedList = false
                             }
                             .height(44.dp)
-                            .background(if (sel) Primary else Surface, RoundedCornerShape(8.dp))
+                            .clip(CycShape.chip)
+                            .background(if (sel) PrimaryDim else Surface)
                             .padding(horizontal = 14.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
@@ -690,7 +799,8 @@ fun PlayScreen(
                 Modifier
                     .align(Alignment.CenterEnd)
                     .width(320.dp)
-                    .background(Color(0xE6121218), RoundedCornerShape(12.dp))
+                    .clip(CycShape.panel)
+                    .background(Color(0xE6121218))
                     .padding(20.dp)
             ) {
                 Text("视频信息", color = TextMain, fontSize = 18.sp, modifier = Modifier.padding(bottom = 12.dp))
@@ -698,6 +808,7 @@ fun PlayScreen(
                 InfoRow("当前集", sections.getOrNull(idx)?.title ?: "${idx + 1}")
                 InfoRow("画质", if (player.videoSize.height > 1080) "${player.videoSize.height}p 高清" else if (player.videoSize.height > 0) "${player.videoSize.height}p" else "未知")
                 InfoRow("网速", if (bandwidthKbps > 0) "${bandwidthKbps / 1000.0} Mbps" else "计算中…")
+                InfoRow("播放源", sourceNow)
                 InfoRow("倍速", "${SPEEDS[speedIdx]}x")
                 InfoRow("播放状态", if (player.isPlaying) "▶ 播放中" else "⏸ 已暂停")
                 Text("按 返回 关闭", color = TextDim, fontSize = 13.sp, modifier = Modifier.padding(top = 14.dp))
@@ -724,8 +835,8 @@ fun PlayScreen(
                         if (player.isPlaying) "⏸ 暂停" else "▶ 播放",
                         selected = ctrlSel == 0
                     ) {
-                        if (player.isPlaying) { player.pause(); osdIcon = "⏸" }
-                        else { player.play(); osdIcon = "▶" }
+                        if (player.isPlaying) { player.pause(); showOsd("⏸") }
+                        else { player.play(); showOsd("▶") }
                     }
                     CtrlButton("下一话", enabled = idx in 0 until sections.size - 1, selected = ctrlSel == 1) {
                         showEpList = false; showSpeedList = false; showInfo = false; goEpisode(1)
@@ -740,6 +851,9 @@ fun PlayScreen(
                     CtrlButton("信息", selected = ctrlSel == 5) {
                         showInfo = true; showEpList = false; showSpeedList = false
                     }
+                    CtrlButton("切源", selected = ctrlSel == 6) {
+                        openGiriPicker()
+                    }
                 }
                 // 进度条行:时间文字左/进度条中/总时长右,同级并排(与看动漫一致)
                 Row(
@@ -749,7 +863,7 @@ fun PlayScreen(
                     Text(formatMs(posMs), color = TextDim, fontSize = 13.sp)
                     SeekBar(
                         pos = posMs, dur = durMs,
-                        selected = ctrlSel == 6,
+                        selected = ctrlSel == 7,
                         modifier = Modifier.weight(1f).padding(horizontal = 12.dp)
                     )
                     Text(formatMs(durMs), color = TextDim, fontSize = 13.sp)
@@ -777,7 +891,8 @@ fun PlayScreen(
             Column(
                 Modifier
                     .align(Alignment.Center)
-                    .background(Color(0xEE121218), RoundedCornerShape(16.dp))
+                    .clip(CycShape.panel)
+                    .background(Color(0xEE121218))
                     .padding(horizontal = 48.dp, vertical = 32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -804,32 +919,28 @@ fun PlayScreen(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 130.dp)
-                    .background(Color(0x99000000), RoundedCornerShape(6.dp))
+                    .clip(CycShape.chip)
+                    .background(Color(0x99000000))
                     .padding(horizontal = 12.dp, vertical = 6.dp)
             )
         }
 
-        // seek 视觉反馈(控制条常驻,仍保留中央提示)
-        seekHint?.let {
+        // 中央 OSD: 单一渲染点(此前 seekHint 与 osdIcon 两块都画 osdText, 会大小字重叠)
+        //   纯符号(▶/⏸/↻/🔁) -> 大字号; 时间类文本("12:34  +130s") -> 常规字号
+        osdText?.let { txt ->
+            val isIcon = txt.length <= 2
             Text(
-                it,
-                color = Color.White, fontSize = 40.sp,
+                txt,
+                color = Color.White,
+                fontSize = if (isIcon) 72.sp else 42.sp,
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .background(Color(0x99000000), RoundedCornerShape(10.dp))
-                    .padding(horizontal = 26.dp, vertical = 12.dp)
-            )
-        }
-
-        // OK 切换播放/暂停的中央 OSD 图标
-        osdIcon?.let {
-            Text(
-                it,
-                color = Color.White, fontSize = 72.sp,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .background(Color(0x99000000), RoundedCornerShape(18.dp))
-                    .padding(horizontal = 44.dp, vertical = 22.dp)
+                    .clip(CycShape.chip)
+                    .background(Color(0x99000000))
+                    .padding(
+                        horizontal = if (isIcon) 44.dp else 30.dp,
+                        vertical = if (isIcon) 22.dp else 14.dp,
+                    )
             )
         }
     }
@@ -847,10 +958,8 @@ private fun CtrlButton(
         modifier
             .clickable(enabled = enabled, onClick = onClick)
             .height(50.dp)
-            .background(
-                if (selected) Primary else Surface,
-                RoundedCornerShape(8.dp)
-            )
+            .clip(CycShape.chip)
+            .background(if (selected) PrimaryDim else Surface)
             .padding(horizontal = 20.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -890,6 +999,8 @@ private fun SeekBar(
     modifier: Modifier = Modifier,
 ) {
     val strokePx = with(LocalDensity.current) { 3.dp.toPx() }
+    // drawWithContent 的 lambda 不是 Composable 上下文, 取色需提前
+    val primaryColor = Primary
     Box(
         modifier
             .height(44.dp)
@@ -907,7 +1018,7 @@ private fun SeekBar(
                 val ratio = if (dur > 0) (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f) else 0f
                 if (ratio > 0) {
                     drawRoundRect(
-                        Primary,
+                        primaryColor,
                         topLeft = Offset(0f, y - trackH / 2),
                         size = Size(size.width * ratio, trackH),
                         cornerRadius = CornerRadius(trackH / 2)
@@ -915,7 +1026,7 @@ private fun SeekBar(
                 }
                 // 播放头
                 val thumbX = size.width * ratio
-                drawCircle(Primary, radius = 9.dp.toPx(), center = Offset(thumbX, y))
+                drawCircle(primaryColor, radius = 9.dp.toPx(), center = Offset(thumbX, y))
                 if (selected) {
                     val inset = strokePx / 2
                     drawRoundRect(
