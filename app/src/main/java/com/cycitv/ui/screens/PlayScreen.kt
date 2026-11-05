@@ -48,6 +48,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -64,8 +65,8 @@ import com.cycitv.data.dto.SectionDto
 import com.cycitv.data.room.HistoryEntity
 import com.cycitv.ui.components.tvFocus
 import com.cycitv.ui.theme.CycShape
+import com.cycitv.ui.theme.OnPrimary
 import com.cycitv.ui.theme.Primary
-import com.cycitv.ui.theme.PrimaryDim
 import com.cycitv.ui.theme.Surface
 import com.cycitv.ui.theme.TextDim
 import com.cycitv.ui.theme.TextMain
@@ -733,14 +734,14 @@ fun PlayScreen(
                                     .clickable { sectionId = s.id; loadSection(s.id); showEpList = false }
                                     .height(46.dp)
                                     .clip(CycShape.chip)
-                                    .background(if (sel) PrimaryDim else Surface)
+                                    .background(if (sel) Primary else Surface)
                                     .padding(horizontal = 14.dp),
                                 contentAlignment = Alignment.CenterStart
                             ) {
                                 Text(
                                     (if (s.id == sectionId) "● " else "") + (s.title.ifBlank { "${s.id}" }),
                                     color = when {
-                                        sel -> Color(0xFF08131F)
+                                        sel -> OnPrimary
                                         s.id == sectionId -> Primary
                                         else -> TextMain
                                     },
@@ -778,13 +779,13 @@ fun PlayScreen(
                             }
                             .height(44.dp)
                             .clip(CycShape.chip)
-                            .background(if (sel) PrimaryDim else Surface)
+                            .background(if (sel) Primary else Surface)
                             .padding(horizontal = 14.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
                         Text(
                             "${sp}x",
-                            color = if (sel) Color(0xFF08131F) else TextMain,
+                            color = if (sel) OnPrimary else TextMain,
                             fontSize = 15.sp
                         )
                     }
@@ -959,18 +960,19 @@ private fun CtrlButton(
             .clickable(enabled = enabled, onClick = onClick)
             .height(50.dp)
             .clip(CycShape.chip)
-            .background(if (selected) PrimaryDim else Surface)
+            .background(if (selected) Primary else Surface)
             .padding(horizontal = 20.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text,
             color = when {
-                selected -> Color(0xFF08131F)
+                selected -> OnPrimary
                 enabled -> TextMain
                 else -> TextDim
             },
-            fontSize = 16.sp
+            fontSize = 16.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
         )
     }
 }

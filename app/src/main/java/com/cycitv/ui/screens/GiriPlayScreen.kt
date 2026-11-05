@@ -46,9 +46,9 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.cycitv.data.api.GirigiriApi
-import com.cycitv.ui.theme.Primary
 import com.cycitv.ui.theme.CycShape
-import com.cycitv.ui.theme.PrimaryDim
+import com.cycitv.ui.theme.OnPrimary
+import com.cycitv.ui.theme.Primary
 import com.cycitv.ui.theme.Surface
 import com.cycitv.ui.theme.TextDim
 import com.cycitv.ui.theme.TextMain
@@ -237,13 +237,13 @@ fun GiriPlayScreen(
                                     .clickable { playEp(i) }
                                     .height(46.dp)
                                     .clip(CycShape.chip)
-                                    .background(if (sel) PrimaryDim else Surface)
+                                    .background(if (sel) Primary else Surface)
                                     .padding(horizontal = 14.dp),
                                 contentAlignment = Alignment.CenterStart
                             ) {
                                 Text(
                                     (if (i == epIdx) "● " else "") + "第${i + 1}集",
-                                    color = when { sel -> Color(0xFF08131F); i == epIdx -> Primary; else -> TextMain },
+                                    color = when { sel -> OnPrimary; i == epIdx -> Primary; else -> TextMain },
                                     fontSize = 15.sp, maxLines = 1
                                 )
                             }
